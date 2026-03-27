@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+.pnp/
+
+# 构建产物
+.next/
+dist/
+build/
+out/
+.cache/
+__pycache__/
+*.pyc
+
+# 版本控制
+.git/
+
+# 大型资产文件
+*.mp4
+*.zip
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+
+# 大型数据文件
+*.json（如果是数据文件而非配置）
+*.csv
+
+# 环境变量
+.env*
+
+# Python 虚拟环境
+venv/
+.venv/
+env/

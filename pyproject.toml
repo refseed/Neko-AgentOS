@@ -1,0 +1,35 @@
+[project]
+name = "neko-agent-core"
+version = "0.1.0"
+description = "NekoAgentCore Agent OS MVP implementation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.28.1",
+  "json-repair>=0.30.0",
+  "litellm",
+  "pydantic>=2.10.6",
+  "rapidfuzz>=3.12.1",
+  "rich>=13.9.4",
+  "sqlmodel>=0.0.22",
+  "typer>=0.15.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.4",
+]
+
+[project.scripts]
+neko-agent = "agent_os.app.cli:app"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_os*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

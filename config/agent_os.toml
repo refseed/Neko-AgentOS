@@ -1,0 +1,41 @@
+[runtime]
+data_dir = ".agent_os"
+checkpoint_db = "checkpoints.sqlite3"
+snapshot_dir = "snapshots"
+semantic_disk_dir = "semantic_disk"
+trace_dir = "traces"
+max_steps = 120
+max_retries = 4
+max_node_iterations = 200
+max_cache_refs = 12
+
+[model]
+provider = "litellm"
+small_model = "gpt-4o-mini"
+medium_model = "gpt-4o-mini"
+large_model = "gpt-4o"
+timeout_sec = 30.0
+temperature = 0.0
+max_tokens = 800
+use_mock = false
+mock_response = "Draft based on current evidence. If evidence is missing, investigation should gather source-backed facts."
+
+[investigation]
+min_fact_count = 2
+min_source_count = 1
+max_rounds = 3
+max_facts_per_round = 3
+
+[blueprint]
+enabled_by_default = false
+entry_keywords = ["paper", "chapter", "outline", "blueprint", "plan", "写作", "论文", "大纲", "计划"]
+
+[reflection]
+max_review_loops = 3
+min_draft_chars = 24
+
+[capability]
+permission_by_node = { strategist = "readonly", blueprint = "none", reasoning = "readonly", investigation = "readonly", reflection = "readonly", break = "none", finish = "none" }
+
+[blackboard]
+constants = { response_style = "Use concise, evidence-backed statements.", citation_rule = "Keep claims traceable to accepted facts." }
