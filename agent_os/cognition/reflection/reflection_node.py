@@ -140,6 +140,17 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 checklist_coverage=checklist_coverage,
                 missing_questions=["Address uncovered checklist items in the draft."],
             )
+        if review_input.stage_goal and not self._is_goal_aligned(draft_text=draft_text, stage_goal=review_input.stage_goal):
+            return ReflectionVerdict(
+                protocol_version="node-io/v1",
+                confidence=0.8,
+                notes=["fallback_heuristic"],
+                status="retry",
+                issues=["draft may drift from stage goal"],
+                next_action="reasoning",
+                checklist_coverage=checklist_coverage,
+                missing_questions=["Revise the draft so that it directly answers the stage goal."],
+            )
 
         return ReflectionVerdict(
             protocol_version="node-io/v1",
@@ -195,3 +206,11 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
             if any(word in lowered_draft for word in item_words):
                 covered.append(item)
         return covered
+
+    def _is_goal_aligned(self, draft_text: str, stage_goal: str) -> bool:
+        goal_terms = [token for token in stage_goal.lower().replace("/", " ").split() if len(token) >= 3]
+        if not goal_terms:
+            return True
+        lowered_draft = draft_text.lower()
+        matched = sum(1 for token in goal_terms if token in lowered_draft)
+        return matched >= max(1, min(2, len(goal_terms)))

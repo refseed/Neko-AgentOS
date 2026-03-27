@@ -37,3 +37,14 @@ def test_graph_engine_exposes_legal_targets_for_routing_layer() -> None:
         legal_edges={"interaction": {"finish"}},
     )
     assert engine.legal_targets("interaction") == {"finish"}
+
+
+def test_graph_engine_can_disable_budget_increment_for_subgraph_runtime() -> None:
+    state = RunState(run_id="run_demo", task_id="task_demo", goal="demo goal")
+    engine = GraphEngine(
+        handlers={"interaction": lambda _state: NodeResult(next_node="finish", state_delta={})},
+        legal_edges={"interaction": {"finish"}},
+        increment_budget=False,
+    )
+    next_state = engine.run_one_step(state)
+    assert next_state.budget.step_used == state.budget.step_used
