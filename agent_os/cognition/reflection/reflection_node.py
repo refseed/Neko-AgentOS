@@ -31,11 +31,11 @@ class ReflectionVerdict(NodeEnvelopeMixin):
     issues: list[str] = Field(default_factory=list)
     next_action: str
     checklist_coverage: list[str] = Field(default_factory=list)
-    missing_questions: list[str] = Field(default_factory=list)
+    interaction_requirements: list[str] = Field(default_factory=list)
 
 
 class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
-    """Validate drafts against checklist and accepted facts."""
+    """General-purpose reflection node for reviewing previous-node outputs."""
 
     @property
     def output_model(self) -> type[ReflectionVerdict]:
@@ -79,7 +79,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=["draft is empty"],
                 next_action="reasoning",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Please provide a complete draft for reflection review."],
+                interaction_requirements=["Please provide a complete draft for reflection review."],
             )
         if review_input.review_iteration >= review_input.max_review_loops:
             return ReflectionVerdict(
@@ -90,18 +90,18 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=["max review loops reached without stable approval"],
                 next_action="investigation",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["What missing evidence can break the current review loop?"],
+                interaction_requirements=["What missing evidence can break the current review loop?"],
             )
-        if draft.needs_investigation or not review_input.accepted_facts:
+        if draft.needs_investigation and not review_input.accepted_facts:
             return ReflectionVerdict(
                 protocol_version="node-io/v1",
                 confidence=0.85,
                 notes=["fallback_heuristic"],
                 status="need_more_evidence",
-                issues=["insufficient accepted facts"],
+                issues=["output indicates unresolved evidence gap"],
                 next_action="investigation",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Provide source-backed facts for unresolved claims."],
+                interaction_requirements=["请补充可验证的关键信息，解决当前未闭合的问题。"],
             )
         if len(draft_text) < review_input.min_draft_chars:
             return ReflectionVerdict(
@@ -112,9 +112,9 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=[f"draft is too short (<{review_input.min_draft_chars} chars)"],
                 next_action="reasoning",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Expand the draft with explicit conclusions and evidence links."],
+                interaction_requirements=["Expand the draft with explicit conclusions and evidence links."],
             )
-        needs_source = any(
+        needs_source = bool(review_input.accepted_facts) and any(
             any(keyword in item.lower() for keyword in ("evidence", "source", "citation", "reference"))
             for item in review_input.checklist
         )
@@ -127,7 +127,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=["checklist requires source references"],
                 next_action="investigation",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Add at least one verifiable source reference."],
+                interaction_requirements=["Add at least one verifiable source reference."],
             )
         if missing_checklist:
             return ReflectionVerdict(
@@ -138,7 +138,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=[f"checklist not covered: {item}" for item in missing_checklist[:3]],
                 next_action="reasoning",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Address uncovered checklist items in the draft."],
+                interaction_requirements=["Address uncovered checklist items in the draft."],
             )
         if review_input.stage_goal and not self._is_goal_aligned(draft_text=draft_text, stage_goal=review_input.stage_goal):
             return ReflectionVerdict(
@@ -149,7 +149,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 issues=["draft may drift from stage goal"],
                 next_action="reasoning",
                 checklist_coverage=checklist_coverage,
-                missing_questions=["Revise the draft so that it directly answers the stage goal."],
+                interaction_requirements=["Revise the draft so that it directly answers the stage goal."],
             )
 
         return ReflectionVerdict(
@@ -160,7 +160,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
             issues=[],
             next_action="strategist",
             checklist_coverage=checklist_coverage,
-            missing_questions=[],
+            interaction_requirements=[],
         )
 
     def build_prompt(self, review_input: ReflectionInput) -> str:
@@ -169,15 +169,22 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
         facts_text = "\n".join(f"- {fact}" for fact in review_input.accepted_facts[:8]) or "- none"
         sources_text = "\n".join(f"- {ref}" for ref in review_input.source_refs[:8]) or "- none"
         return (
-            "You are an independent reflection node.\n"
-            "Assess the draft with checklist and facts only.\n"
-            "Protocol:\n"
-            "- Return strict JSON only.\n"
-            "- Required keys: protocol_version, node_name, confidence, notes, status, issues, next_action, checklist_coverage, missing_questions.\n"
-            "- protocol_version must be 'node-io/v1'.\n"
-            "- node_name must be 'reflection'.\n"
-            "status must be one of: approved, retry, need_more_evidence.\n"
-            "next_action must follow status mapping: approved->strategist, retry->reasoning, need_more_evidence->investigation.\n"
+            "Role: general reflection node.\n"
+            "Goal: review the previous node output and decide whether to continue, revise, or gather more information.\n"
+            "Review dimensions (generic):\n"
+            "1) Intent alignment: does the output answer the current goal/stage?\n"
+            "2) Internal quality: logic consistency, completeness, clarity, and actionability.\n"
+            "3) Risk signals: unsupported assumptions, contradictions, uncertainty not surfaced.\n"
+            "4) Evidence grounding when evidence is required by checklist or current context.\n"
+            "Hard output contract:\n"
+            "- Output strict JSON only. No markdown. No analysis text.\n"
+            "- Required keys: protocol_version, node_name, confidence, notes, status, issues, next_action, checklist_coverage, interaction_requirements.\n"
+            "- protocol_version='node-io/v1'. node_name='reflection'.\n"
+            "- status must be one of: approved, retry, need_more_evidence.\n"
+            "- next_action mapping is strict: approved->strategist, retry->reasoning, need_more_evidence->investigation.\n"
+            "- If status=retry, issues must describe what to revise.\n"
+            "- If status=need_more_evidence, interaction_requirements must be specific and actionable.\n"
+            "Return exactly one JSON object.\n"
             f"stage={review_input.stage}\n"
             f"stage_goal={review_input.stage_goal}\n"
             f"required_output={review_input.required_output}\n"

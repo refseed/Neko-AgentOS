@@ -34,6 +34,8 @@ class ModelConfig(BaseModel):
     timeout_sec: float = 30.0
     temperature: float = 0.0
     max_tokens: int = 800
+    stream: bool = False
+    stream_to_console: bool = True
     use_mock: bool = False
     mock_response: str = (
         "Draft based on current evidence. If evidence is missing, investigation should gather source-backed facts."
@@ -81,6 +83,14 @@ class ReflectionConfig(BaseModel):
     min_draft_chars: int = 24
 
 
+class ClarificationConfig(BaseModel):
+    """Clarification question generation controls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_parse_retries: int = 2
+
+
 class CapabilityConfig(BaseModel):
     """Node-level capability profile map."""
 
@@ -97,6 +107,16 @@ class CapabilityConfig(BaseModel):
             "finish": "none",
         }
     )
+
+
+class MetaConfig(BaseModel):
+    """Meta routing behavior controls."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    control_model_tier: str = "small"
+    low_confidence_threshold: float = 0.72
+    enable_low_confidence_review: bool = True
 
 
 class BlackboardConfig(BaseModel):
@@ -117,7 +137,9 @@ class AgentConfig(BaseModel):
     investigation: InvestigationConfig = Field(default_factory=InvestigationConfig)
     blueprint: BlueprintConfig = Field(default_factory=BlueprintConfig)
     reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    clarification: ClarificationConfig = Field(default_factory=ClarificationConfig)
     capability: CapabilityConfig = Field(default_factory=CapabilityConfig)
+    meta: MetaConfig = Field(default_factory=MetaConfig)
     blackboard: BlackboardConfig = Field(default_factory=BlackboardConfig)
 
 

@@ -11,13 +11,15 @@ max_cache_refs = 12
 
 [model]
 provider = "litellm"
-small_model = "gpt-4o-mini"
-medium_model = "gpt-4o-mini"
-large_model = "gpt-4o"
+small_model = "zai/glm-4.5"
+medium_model = "zai/glm-4.7"
+large_model = "zai/glm-5"
+use_mock = false
 timeout_sec = 30.0
 temperature = 0.0
 max_tokens = 800
-use_mock = false
+stream = true
+stream_to_console = true
 mock_response = "Draft based on current evidence. If evidence is missing, investigation should gather source-backed facts."
 
 [investigation]
@@ -34,8 +36,16 @@ entry_keywords = ["paper", "chapter", "outline", "blueprint", "plan", "写作", 
 max_review_loops = 3
 min_draft_chars = 24
 
+[clarification]
+max_parse_retries = 2
+
 [capability]
 permission_by_node = { strategist = "readonly", blueprint = "none", reasoning = "readonly", investigation = "readonly", reflection = "readonly", break = "none", finish = "none" }
+
+[meta]
+control_model_tier = "small"
+low_confidence_threshold = 0.72
+enable_low_confidence_review = true
 
 [blackboard]
 constants = { response_style = "Use concise, evidence-backed statements.", citation_rule = "Keep claims traceable to accepted facts." }

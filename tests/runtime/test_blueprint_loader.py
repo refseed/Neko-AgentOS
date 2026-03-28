@@ -18,3 +18,10 @@ def test_blueprint_loader_resolves_stage_transition_by_result() -> None:
     graph = build_blueprint_graph()
     next_stage = graph.resolve_next_stage("idea_summary", "approved")
     assert next_stage == "writing_plan"
+
+
+def test_blueprint_loader_exposes_runtime_template_constraints() -> None:
+    graph = build_blueprint_graph()
+    legal_targets = {"reasoning", "investigation", "reflection", "finish"}
+    constrained = graph.constrain_runtime_targets("investigate_and_distill", legal_targets)
+    assert constrained == {"reasoning", "investigation", "reflection"}

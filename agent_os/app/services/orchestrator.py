@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+import re
+from typing import Callable, Iterable
 from uuid import uuid4
 
 from agent_os.app.config import AgentConfig, load_agent_config
@@ -83,11 +84,13 @@ class AgentOrchestrator:
         self._epistemic_guard = EpistemicGuard()
         self._blueprint_graph = build_blueprint_graph()
 
-        self._resource_manager = ResourceManager()
+        self._resource_manager = ResourceManager(control_model_tier=self._config.meta.control_model_tier)
         self._model_gateway = ModelGatewayClient(build_model_provider(self._config.model))
         self._strategist = Strategist(
             model_gateway=self._model_gateway,
             blueprint_entry_keywords=self._config.blueprint.entry_keywords,
+            low_confidence_threshold=self._config.meta.low_confidence_threshold,
+            enable_low_confidence_review=self._config.meta.enable_low_confidence_review,
         )
         self._meta_router = MetaRouter(
             strategist=self._strategist,
@@ -152,6 +155,7 @@ class AgentOrchestrator:
             capability_router=self._capability_router,
             capability_loader=self._capability_loader,
             legal_targets_getter=lambda source: self._engine.legal_targets(source),
+            template_target_filter=self._constrain_targets_by_blueprint_template,
         )
         self._blueprint_runtime_node = BlueprintRuntimeNode(
             trace_logger=self._trace_logger,
@@ -174,6 +178,7 @@ class AgentOrchestrator:
             investigate=lambda run_state: self._investigate(run_state),
             semantic_disk=self._semantic_disk,
             model_gateway=self._model_gateway,
+            clarification_max_parse_retries=self._config.clarification.max_parse_retries,
         )
         self._reflection_runtime_node = ReflectionRuntimeNode(
             trace_logger=self._trace_logger,
@@ -208,7 +213,13 @@ class AgentOrchestrator:
             legal_edges=build_main_graph_edges(),
         )
 
-    def start_run(self, request: StartRunRequest) -> dict[str, object]:
+    def start_run(
+        self,
+        request: StartRunRequest,
+        *,
+        debug: bool = False,
+        debug_callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
         run_id = f"run_{uuid4().hex[:12]}"
         start_node = self._blueprint_graph.nodes[self._blueprint_graph.start_node]
         blueprint_enabled = self._config.blueprint.enabled_by_default
@@ -237,27 +248,83 @@ class AgentOrchestrator:
             ),
         )
         self._trace_ids[run_id] = initial_state.audit.trace_id
-        return self._run_until_stop(initial_state)
+        return self._run_until_stop(initial_state, debug=debug, debug_callback=debug_callback)
 
-    def resume_run(self, request: ResumeRunRequest) -> dict[str, object]:
+    def resume_run(
+        self,
+        request: ResumeRunRequest,
+        *,
+        debug: bool = False,
+        debug_callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
         state = self._checkpoint_repo.load_latest(request.run_id)
         if state is None:
             return {"status": "error", "message": f"run_id not found: {request.run_id}"}
 
+        has_user_answer = bool(request.user_answer and request.user_answer.strip())
         accepted_facts = list(state.payload.accepted_facts)
-        if request.user_answer:
-            accepted_facts.append(f"user_input: {request.user_answer}")
+        if has_user_answer and request.user_answer:
+            accepted_facts = list(dict.fromkeys([*accepted_facts, *self._extract_user_facts(request.user_answer)]))
+
+        payload = state.payload.model_copy(
+            update={
+                "accepted_facts": accepted_facts,
+                "stage_result": (
+                    "retry"
+                    if has_user_answer and state.payload.stage_result == "need_more_evidence"
+                    else state.payload.stage_result
+                ),
+            }
+        )
+        blueprint = state.blueprint.model_copy(
+            update={
+                "stage_status": (
+                    "retry"
+                    if has_user_answer and state.blueprint.stage_status == "need_more_evidence"
+                    else state.blueprint.stage_status
+                ),
+            }
+        )
+        investigation = state.investigation.model_copy(
+            update={
+                "active": False if has_user_answer else state.investigation.active,
+                "pending_questions": [] if has_user_answer else list(state.investigation.pending_questions),
+                "enough_evidence": (
+                    state.investigation.enough_evidence
+                    or (
+                        has_user_answer
+                        and len([fact for fact in accepted_facts if fact.strip()]) >= self._config.investigation.min_fact_count
+                    )
+                ),
+            }
+        )
         resumed = state.model_copy(
             update={
                 "status": "running",
                 "current_node": "interaction",
-                "payload": state.payload.model_copy(update={"accepted_facts": accepted_facts}),
+                "payload": payload,
+                "blueprint": blueprint,
+                "investigation": investigation,
                 "uncertainty": UncertaintyState(status="none", type=None, question_for_user=None, blocked_by=[]),
                 "break_state": BreakState(),
             }
         )
         self._trace_ids[resumed.run_id] = resumed.audit.trace_id
-        return self._run_until_stop(resumed)
+        return self._run_until_stop(resumed, debug=debug, debug_callback=debug_callback)
+
+    def _extract_user_facts(self, user_answer: str) -> list[str]:
+        raw = user_answer.strip()
+        if not raw:
+            return []
+        segments = [
+            segment.strip(" -\t")
+            for segment in re.split(r"[\n\r,，;；。!?！？]+", raw)
+            if segment.strip()
+        ]
+        if not segments:
+            segments = [raw]
+        facts = [f"user_input: {segment}" for segment in segments[:6]]
+        return list(dict.fromkeys(facts))
 
     def _resolve_path(self, raw_path: str) -> Path:
         path = Path(raw_path)
@@ -271,9 +338,16 @@ class AgentOrchestrator:
             return path
         return self._data_root / path
 
-    def _run_until_stop(self, initial_state: RunState) -> dict[str, object]:
+    def _run_until_stop(
+        self,
+        initial_state: RunState,
+        *,
+        debug: bool = False,
+        debug_callback: Callable[[dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
         state = initial_state
         steps = 0
+        debug_steps: list[dict[str, object]] = []
         while state.current_node != "finish" and state.status == "running":
             steps += 1
             if steps > self._config.runtime.max_node_iterations:
@@ -290,11 +364,23 @@ class AgentOrchestrator:
                     }
                 )
                 break
+            before_state = state
             state = self._engine.run_one_step(state)
             self._trace_ids[state.run_id] = state.audit.trace_id
+            if debug:
+                debug_step = self._build_debug_step(step_index=steps, before=before_state, after=state)
+                debug_steps.append(debug_step)
+                if debug_callback is not None:
+                    debug_callback(debug_step)
 
         if state.current_node == "finish":
+            before_finish = state
             state = self._engine.run_one_step(state)
+            if debug:
+                finish_step = self._build_debug_step(step_index=steps + 1, before=before_finish, after=state)
+                debug_steps.append(finish_step)
+                if debug_callback is not None:
+                    debug_callback(finish_step)
 
         break_report: dict[str, object] | None = None
         if state.status == "paused":
@@ -318,7 +404,112 @@ class AgentOrchestrator:
             "token_used": state.budget.token_used,
             "memory_refs": state.memory.model_dump(),
         }
+        if debug:
+            result["debug_steps"] = debug_steps
         return result
+
+    def _build_debug_step(self, *, step_index: int, before: RunState, after: RunState) -> dict[str, object]:
+        return {
+            "step": step_index,
+            "from_node": before.current_node,
+            "to_node": after.current_node,
+            "status": after.status,
+            "blueprint_stage": after.blueprint.active_node,
+            "stage_status": after.blueprint.stage_status,
+            "stage_result": after.payload.stage_result,
+            "routing": {
+                "confidence": after.routing.confidence,
+                "candidate_nodes": list(after.routing.candidate_nodes),
+                "tool_profile": after.routing.tool_profile,
+                "model_tier": after.routing.model_tier,
+                "deterministic": after.routing.deterministic,
+                "guardrail_flags": list(after.routing.guardrail_flags),
+            },
+            "capabilities": {
+                "permission_level": after.capabilities.permission_level,
+                "loaded_tools": list(after.capabilities.loaded_tools),
+                "withheld_tools": list(after.capabilities.withheld_tools),
+            },
+            "investigation": {
+                "active": after.investigation.active,
+                "pending_questions": list(after.investigation.pending_questions),
+                "enough_evidence": after.investigation.enough_evidence,
+            },
+            "uncertainty": after.uncertainty.model_dump(),
+            "budget": {
+                "step_used": after.budget.step_used,
+                "max_steps": after.budget.max_steps,
+                "token_used": after.budget.token_used,
+            },
+            "node_output": self._build_node_output_summary(before=before, after=after),
+        }
+
+    def _build_node_output_summary(self, *, before: RunState, after: RunState) -> dict[str, object]:
+        node = before.current_node
+        if node == "interaction":
+            return {
+                "status": after.status,
+                "uncertainty": after.uncertainty.model_dump(),
+            }
+        if node == "strategist":
+            return {
+                "routed_to": after.current_node,
+                "routing_confidence": after.routing.confidence,
+                "tool_profile": after.routing.tool_profile,
+                "model_tier": after.routing.model_tier,
+                "guardrail_flags": list(after.routing.guardrail_flags),
+                "uncertainty": after.uncertainty.model_dump(),
+            }
+        if node == "blueprint":
+            return {
+                "blueprint_stage": after.blueprint.active_node,
+                "stage_status": after.blueprint.stage_status,
+                "instruction_preview": self._preview(after.payload.instruction),
+            }
+        if node == "reasoning":
+            token_delta = max(0, after.budget.token_used - before.budget.token_used)
+            return {
+                "draft_preview": self._preview(after.payload.draft_text),
+                "token_delta": token_delta,
+                "needs_investigation": after.investigation.active,
+                "pending_questions": list(after.investigation.pending_questions),
+            }
+        if node == "investigation":
+            added_facts = [
+                fact for fact in after.payload.accepted_facts if fact not in set(before.payload.accepted_facts)
+            ]
+            added_sources = [ref for ref in after.payload.source_refs if ref not in set(before.payload.source_refs)]
+            return {
+                "enough_evidence": after.investigation.enough_evidence,
+                "pending_questions": list(after.investigation.pending_questions),
+                "question_for_user": after.uncertainty.question_for_user,
+                "added_facts": added_facts[:3],
+                "added_sources": added_sources[:3],
+            }
+        if node == "reflection":
+            return {
+                "verdict": after.payload.stage_result,
+                "stage_status": after.blueprint.stage_status,
+                "pending_questions": list(after.investigation.pending_questions),
+            }
+        if node == "break":
+            return {
+                "status": after.status,
+                "checkpoint_id": after.checkpoint.last_checkpoint_id,
+                "question_for_user": after.break_state.question_for_user,
+            }
+        if node == "finish":
+            return {
+                "status": after.status,
+                "current_node": after.current_node,
+            }
+        return {"status": after.status}
+
+    def _preview(self, text: str, limit: int = 220) -> str:
+        normalized = text.strip().replace("\n", " ")
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}..."
 
     def _append_cache_ref(self, state: RunState, cache_ref: str) -> MemoryRefs:
         cache_refs = list(dict.fromkeys([*state.memory.cache_refs, cache_ref]))
@@ -339,7 +530,9 @@ class AgentOrchestrator:
     def _load_documents(self, state: RunState) -> list[tuple[str, str]]:
         documents: list[tuple[str, str]] = []
         allowed_tools = set(state.capabilities.loaded_tools) if state.capabilities.loaded_tools else None
-        permission_level = "readonly" if "readonly" in state.capabilities.load_reason else "none"
+        permission_level = state.capabilities.permission_level
+        if permission_level == "none":
+            return documents
         for source in state.payload.source_refs:
             result = self._tool_runtime.execute(
                 tool_name="read_local_text",
@@ -376,6 +569,11 @@ class AgentOrchestrator:
             elif mount.source == "blackboard":
                 mounted.extend(self._global_blackboard.render_context())
         return list(dict.fromkeys(mounted))[:10]
+
+    def _constrain_targets_by_blueprint_template(self, state: RunState, legal_targets: set[str]) -> set[str]:
+        if not state.blueprint.enabled:
+            return legal_targets
+        return self._blueprint_graph.constrain_runtime_targets(state.blueprint.subgraph_template, legal_targets)
 
     def _read_local_text_tool(self, _context, payload: dict[str, object]) -> dict[str, object]:
         path_value = payload.get("path")

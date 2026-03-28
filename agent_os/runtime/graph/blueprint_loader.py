@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_os.runtime.state.blueprint_models import BlueprintGraph, BlueprintNode
+from agent_os.runtime.state.blueprint_models import BlueprintGraph, BlueprintNode, SubgraphTemplateSpec
 
 
 def build_blueprint_graph(nodes: list[BlueprintNode] | None = None) -> BlueprintGraph:
@@ -55,8 +55,31 @@ def build_blueprint_graph(nodes: list[BlueprintNode] | None = None) -> Blueprint
         ]
 
     node_map = {node.node_id: node for node in nodes}
+    template_specs = {
+        "investigate_and_distill": SubgraphTemplateSpec(
+            template_id="investigate_and_distill",
+            allowed_runtime_targets=["reasoning", "investigation", "reflection", "break"],
+            preferred_entry="reasoning",
+        ),
+        "reason_reflect_loop": SubgraphTemplateSpec(
+            template_id="reason_reflect_loop",
+            allowed_runtime_targets=["reasoning", "reflection", "investigation", "break"],
+            preferred_entry="reasoning",
+        ),
+        "compose_outline": SubgraphTemplateSpec(
+            template_id="compose_outline",
+            allowed_runtime_targets=["reasoning", "reflection", "break"],
+            preferred_entry="reasoning",
+        ),
+        "terminal": SubgraphTemplateSpec(
+            template_id="terminal",
+            allowed_runtime_targets=["finish", "break", "blueprint"],
+            preferred_entry="finish",
+        ),
+    }
     return BlueprintGraph(
         graph_id="bp_default",
         start_node="literature_scan",
         nodes=node_map,
+        subgraph_templates=template_specs,
     )

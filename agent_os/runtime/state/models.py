@@ -68,6 +68,8 @@ class RoutingState(BaseModel):
     tool_profile: str = "default_readonly"
     model_tier: Literal["small", "medium", "large"] = "small"
     guardrail_flags: list[str] = Field(default_factory=list)
+    payload_delta: dict[str, Any] = Field(default_factory=dict)
+    uncertainty_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilitiesState(BaseModel):
@@ -77,6 +79,7 @@ class CapabilitiesState(BaseModel):
 
     loaded_tools: list[str] = Field(default_factory=list)
     withheld_tools: list[str] = Field(default_factory=list)
+    permission_level: Literal["none", "readonly", "write"] = "none"
     load_reason: str = ""
 
 

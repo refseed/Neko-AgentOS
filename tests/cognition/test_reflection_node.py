@@ -83,3 +83,22 @@ def test_reflection_node_detects_stage_goal_drift() -> None:
         draft=ReasoningResult(draft_text="This draft discusses writing style but not the requested topic."),
     )
     assert verdict.status == "retry"
+
+
+def test_reflection_node_is_not_forced_to_need_evidence_when_draft_is_clear() -> None:
+    node = ReflectionNode()
+    review_input = ReflectionInput(
+        stage="idea_summary",
+        stage_goal="给出洗车方式建议",
+        checklist=["结论明确", "给出可执行建议"],
+        accepted_facts=[],
+        source_refs=[],
+    )
+    verdict = node.review(
+        review_input=review_input,
+        draft=ReasoningResult(
+            draft_text="建议直接把车开到洗车店。因为洗车需要车辆在场，步行过去无法完成洗车。",
+            needs_investigation=False,
+        ),
+    )
+    assert verdict.status in {"approved", "retry"}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from agent_os.runtime.state.models import RunState
 
@@ -25,7 +25,6 @@ class ReasoningResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     draft_text: str
-    missing_questions: list[str] = Field(default_factory=list)
     needs_investigation: bool = False
     input_tokens: int = 0
     output_tokens: int = 0
@@ -46,7 +45,6 @@ class ReasoningNode:
         if not state.payload.accepted_facts:
             return ReasoningResult(
                 draft_text=draft_text,
-                missing_questions=["Need at least one grounded fact for this stage."],
                 needs_investigation=True,
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,

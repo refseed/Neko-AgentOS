@@ -50,11 +50,14 @@ class PromptBuilderNode(BaseLLMNode[PromptBuildInput, PromptBuildOutput]):
     def _reflection_seed(self, node_input: PromptBuildInput) -> str:
         checklist_text = "\n".join(f"- {item}" for item in node_input.checklist) or "- Ensure claims are evidence-backed"
         facts_text = "\n".join(f"- {fact}" for fact in node_input.accepted_facts[:8]) or "- none yet"
+        memory_text = "\n".join(f"- {item}" for item in node_input.memory_context[:8]) or "- none mounted"
         return (
             f"Stage: {node_input.stage}\n"
             f"Checklist:\n{checklist_text}\n"
             f"Accepted facts:\n{facts_text}\n"
+            f"Mounted memory:\n{memory_text}\n"
             f"Draft:\n{node_input.draft_text}\n"
+            "Review dimensions: intent alignment, logic consistency, completeness, uncertainty handling, and evidence use when required.\n"
             "Return one of: approved, retry, need_more_evidence."
         )
 

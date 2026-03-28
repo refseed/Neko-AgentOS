@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from logging import Logger
+import re
 from typing import Callable, Iterable
 
 from agent_os.app.config import ReflectionConfig
+from agent_os.cognition.clarification.question_node import ClarificationQuestionNode
 from agent_os.cognition.memory_router.memory_router import MemoryMount
 from agent_os.cognition.prompt_builder.builder import build_reflection_prompt
 from agent_os.cognition.reasoning.reasoning_node import ReasoningNode, ReasoningResult
@@ -60,6 +62,7 @@ class StrategistRuntimeNode:
         capability_router: CapabilityRouter,
         capability_loader: CapabilityLoader,
         legal_targets_getter: Callable[[str], set[str]],
+        template_target_filter: Callable[[RunState, set[str]], set[str]] | None = None,
     ) -> None:
         self._trace_logger = trace_logger
         self._record_event = record_event
@@ -69,6 +72,7 @@ class StrategistRuntimeNode:
         self._capability_router = capability_router
         self._capability_loader = capability_loader
         self._legal_targets_getter = legal_targets_getter
+        self._template_target_filter = template_target_filter
 
     def handle(self, state: RunState) -> NodeResult:
         self._trace_logger.log(state.audit.trace_id, "node_start", "strategist")
@@ -78,6 +82,22 @@ class StrategistRuntimeNode:
             {"stage": state.blueprint.active_node, "stage_status": state.blueprint.stage_status},
         )
         allowed_targets = self._legal_targets_getter(state.current_node)
+        if self._template_target_filter is not None:
+            allowed_targets = self._template_target_filter(state, allowed_targets)
+        if not allowed_targets:
+            uncertainty = UncertaintyState(
+                status="blocked",
+                type="invalid_route",
+                question_for_user="No legal route is available for the current blueprint template.",
+                blocked_by=["template_target_empty"],
+            )
+            return NodeResult(
+                next_node="break",
+                state_delta={
+                    "memory": self._append_cache_ref(state, cache_ref),
+                    "uncertainty": uncertainty,
+                },
+            )
         routing_decision = self._meta_router.route(state=state, allowed_targets=allowed_targets)
         mounted_memory = self._mount_memory_context(state=state, mounts=routing_decision.memory_mounts)
         capability_route = self._capability_router.route(state=state, next_node=routing_decision.next_node)
@@ -87,7 +107,9 @@ class StrategistRuntimeNode:
         )
 
         uncertainty = state.uncertainty
-        if routing_decision.next_node == "break" and uncertainty.status != "blocked":
+        if routing_decision.uncertainty_report.status == "blocked":
+            uncertainty = routing_decision.uncertainty_report
+        elif routing_decision.next_node == "break" and uncertainty.status != "blocked":
             reason = routing_decision.guardrail_flags[0] if routing_decision.guardrail_flags else "low_confidence_routing"
             uncertainty_type = "budget_exceeded" if "max_" in reason else "low_confidence_routing"
             uncertainty = UncertaintyState(
@@ -96,6 +118,12 @@ class StrategistRuntimeNode:
                 question_for_user="Should I continue with relaxed limits or stop here for manual review?",
                 blocked_by=[reason],
             )
+
+        payload_updates: dict[str, object] = {"memory_context": mounted_memory}
+        payload_fields = set(state.payload.__class__.model_fields)
+        for key, value in routing_decision.payload_delta.items():
+            if key in payload_fields and key != "memory_context":
+                payload_updates[key] = value
 
         delta = {
             "memory": self._append_cache_ref(state, cache_ref),
@@ -107,13 +135,16 @@ class StrategistRuntimeNode:
                     "tool_profile": routing_decision.tool_profile,
                     "model_tier": routing_decision.model_tier,
                     "guardrail_flags": routing_decision.guardrail_flags,
+                    "payload_delta": dict(routing_decision.payload_delta),
+                    "uncertainty_report": routing_decision.uncertainty_report.model_dump(),
                 }
             ),
-            "payload": state.payload.model_copy(update={"memory_context": mounted_memory}),
+            "payload": state.payload.model_copy(update=payload_updates),
             "capabilities": state.capabilities.model_copy(
                 update={
                     "loaded_tools": [tool.name for tool in capability.loaded],
                     "withheld_tools": [tool.name for tool in capability.withheld],
+                    "permission_level": capability_route.permission_level,
                     "load_reason": capability_route.reason,
                 }
             ),
@@ -200,11 +231,17 @@ class BlueprintRuntimeNode:
         elif blueprint.stage_status == "approved":
             result_key = state.payload.stage_result or "approved"
             next_stage = self._blueprint_graph.resolve_next_stage(blueprint.active_node, result_key)
-            if next_stage is None and current_stage.allowed_exits:
-                next_stage = current_stage.allowed_exits[0]
             if next_stage is None:
-                next_stage = "done"
-            if next_stage not in self._blueprint_graph.nodes:
+                uncertainty = UncertaintyState(
+                    status="blocked",
+                    type="conflicting_evidence",
+                    question_for_user=(
+                        f"Blueprint stage '{blueprint.active_node}' has no transition for result '{result_key}'."
+                    ),
+                    blocked_by=["blueprint_transition_missing"],
+                )
+                next_node = "break"
+            elif next_stage not in self._blueprint_graph.nodes:
                 uncertainty = UncertaintyState(
                     status="blocked",
                     type="conflicting_evidence",
@@ -270,11 +307,7 @@ class ReasoningRuntimeNode:
         ram_ref = self._working_ram.put(state.run_id, "latest_draft", reasoning_result.draft_text)
         total_tokens = state.budget.token_used + reasoning_result.input_tokens + reasoning_result.output_tokens
 
-        pending_questions = (
-            list(reasoning_result.missing_questions)
-            if reasoning_result.needs_investigation
-            else list(state.investigation.pending_questions)
-        )
+        pending_questions = list(state.investigation.pending_questions) if reasoning_result.needs_investigation else []
         stage_status = "need_more_evidence" if reasoning_result.needs_investigation else "in_progress"
 
         memory_with_cache = self._append_cache_ref(state, cache_ref)
@@ -316,6 +349,7 @@ class InvestigationRuntimeNode:
         investigate: Callable[[RunState], DistilledEvidence],
         semantic_disk: SemanticDisk,
         model_gateway: ModelGatewayClient,
+        clarification_max_parse_retries: int = 2,
     ) -> None:
         self._trace_logger = trace_logger
         self._record_event = record_event
@@ -323,6 +357,25 @@ class InvestigationRuntimeNode:
         self._investigate = investigate
         self._semantic_disk = semantic_disk
         self._model_gateway = model_gateway
+        self._clarification_question_node = ClarificationQuestionNode(
+            node_name="clarification_question",
+            model_gateway=model_gateway,
+            max_parse_retries=clarification_max_parse_retries,
+        )
+
+    def _extract_pending_from_uncertainty_message(self, message: str | None) -> list[str]:
+        if not message:
+            return []
+        extracted: list[str] = []
+        for line in message.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            stripped = re.sub(r"^\d+\.\s*", "", stripped)
+            if not stripped:
+                continue
+            extracted.append(stripped)
+        return list(dict.fromkeys(extracted))
 
     def handle(self, state: RunState) -> NodeResult:
         self._trace_logger.log(state.audit.trace_id, "node_start", "investigation")
@@ -361,17 +414,34 @@ class InvestigationRuntimeNode:
             )
             blueprint = state.blueprint.model_copy(update={"stage_status": "retry"})
         else:
+            pending_questions = [item.strip() for item in state.investigation.pending_questions if item.strip()]
+            if not pending_questions:
+                pending_questions = self._extract_pending_from_uncertainty_message(state.uncertainty.question_for_user)
+            question_output = self._clarification_question_node.ask(
+                goal=state.goal,
+                stage=state.blueprint.active_node,
+                stage_status=state.blueprint.stage_status,
+                has_source_refs=bool(source_refs),
+                accepted_fact_count=len(accepted_facts),
+                pending_questions=pending_questions,
+                draft_preview=state.payload.draft_text,
+                interaction_message=state.uncertainty.question_for_user,
+                uncertainty_type=state.uncertainty.type,
+                blocked_by=list(state.uncertainty.blocked_by),
+                model_tier=state.routing.model_tier,
+            )
+            question_for_user = question_output.question_for_user
+            pending_questions = [item.strip() for item in question_output.pending_questions if item.strip()]
             uncertainty = UncertaintyState(
                 status="blocked",
                 type="missing_evidence",
-                question_for_user="I still need source-backed evidence. Please provide at least one relevant source file path.",
+                question_for_user=question_for_user,
                 blocked_by=["no_evidence"],
             )
             investigation_state = state.investigation.model_copy(
                 update={
                     "active": True,
-                    "pending_questions": state.investigation.pending_questions
-                    or ["Need source-backed evidence for current stage."],
+                    "pending_questions": pending_questions,
                     "enough_evidence": False,
                 }
             )
@@ -431,7 +501,6 @@ class ReflectionRuntimeNode:
         draft = ReasoningResult(
             draft_text=state.payload.draft_text,
             needs_investigation=state.investigation.active,
-            missing_questions=list(state.investigation.pending_questions),
         )
         review_input = ReflectionInput(
             stage=state.blueprint.active_node,
@@ -459,7 +528,9 @@ class ReflectionRuntimeNode:
 
         investigation_state = state.investigation
         if verdict.status == "need_more_evidence":
-            pending_questions = list(dict.fromkeys([*state.investigation.pending_questions, *verdict.missing_questions]))
+            pending_questions = list(
+                dict.fromkeys([*state.investigation.pending_questions, *verdict.interaction_requirements])
+            )
             investigation_state = state.investigation.model_copy(
                 update={
                     "active": True,

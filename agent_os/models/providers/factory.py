@@ -22,6 +22,8 @@ def build_model_provider(config: ModelConfig) -> BaseProvider:
             timeout_sec=config.timeout_sec,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            stream=config.stream,
+            stream_to_console=config.stream_to_console,
             mock_response=mock_response,
             fallback_provider=EchoProvider(),
         )
