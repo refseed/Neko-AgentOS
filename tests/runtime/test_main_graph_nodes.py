@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from agent_os.cognition.clarification.question_node import ClarificationQuestionError
+from agent_os.investigation.extract.extractor import DistilledEvidence
+from agent_os.memory.disk.semantic_disk import SemanticDisk
+from agent_os.models.providers.litellm_provider import EmptyModelResponseError
 from agent_os.runtime.graph.blueprint_loader import build_blueprint_graph
-from agent_os.runtime.nodes.main_graph_nodes import BlueprintRuntimeNode, StrategistRuntimeNode
+from agent_os.runtime.nodes.main_graph_nodes import (
+    BlueprintRuntimeNode,
+    InvestigationRuntimeNode,
+    StrategistRuntimeNode,
+)
 from agent_os.runtime.routing.capability_router import CapabilityRouter
-from agent_os.runtime.state.models import BlueprintState, PayloadState, RunState
+from agent_os.runtime.state.models import BlueprintState, InvestigationState, PayloadState, RunState, UncertaintyState
 from agent_os.tools.capability_loader.loader import CapabilityLoader
 from agent_os.tools.registry.registry import ToolRegistry, ToolSpec
 
@@ -104,3 +116,36 @@ def test_strategist_runtime_node_constrains_allowed_targets_by_template() -> Non
     result = node.handle(state)
     assert result.next_node == "reasoning"
     assert meta_router.allowed_targets == {"reasoning", "reflection"}
+
+
+def test_investigation_runtime_node_propagates_clarification_error(tmp_path: Path) -> None:
+    """When the model persistently returns empty text, the error must propagate
+    (no silent fallback) so the user is informed of the issue."""
+
+    class _GatewayStub:
+        def request(self, prompt, model_tier="small"):
+            raise EmptyModelResponseError(
+                "Model returned empty text after all retries | model=test | tier=small"
+            )
+
+    node = InvestigationRuntimeNode(
+        trace_logger=_TraceStub(),
+        record_event=lambda _run_id, _event_type, _details: "cache:inv",
+        append_cache_ref=lambda state, _cache_ref: state.memory,
+        investigate=lambda _state: DistilledEvidence(facts=[], source_refs=[], enough_evidence=False),
+        semantic_disk=SemanticDisk(root_dir=tmp_path / "disk"),
+        model_gateway=_GatewayStub(),
+        clarification_max_parse_retries=0,
+    )
+
+    state = RunState(
+        run_id="run_inv",
+        task_id="task_inv",
+        goal="我需要洗车，洗车店离家100米",
+        current_node="investigation",
+        investigation=InvestigationState(active=True, pending_questions=[], enough_evidence=False),
+        uncertainty=UncertaintyState(status="none", type=None),
+    )
+
+    with pytest.raises(ClarificationQuestionError, match="model request failed"):
+        node.handle(state)

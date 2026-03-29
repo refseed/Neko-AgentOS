@@ -164,15 +164,26 @@ def test_litellm_provider_skips_stream_options_for_zai_models() -> None:
     assert "stream_options" not in calls[0]
 
 
-def test_litellm_provider_does_not_extract_reasoning_content_when_content_is_empty() -> None:
+def test_litellm_provider_extracts_json_from_reasoning_content() -> None:
+    """Thinking models (e.g. zai/glm-4.5) put output in reasoning_content.
+    When content is empty, the provider should extract a valid JSON object from it."""
+
+    reasoning_with_json = (
+        "Let me think about this...\n"
+        "The user wants JSON output.\n"
+        '{"protocol_version": "node-io/v1", "node_name": "test", "confidence": 0.9, '
+        '"notes": "ok", "answer": "walk"}\n'
+        "Done."
+    )
+
     def fake_completion(**kwargs):
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content="", reasoning_content="reasoning text output"),
+                    message=SimpleNamespace(content="", reasoning_content=reasoning_with_json),
                 )
             ],
-            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2),
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=8),
         )
 
     provider = LiteLLMProvider(
@@ -183,5 +194,134 @@ def test_litellm_provider_does_not_extract_reasoning_content_when_content_is_emp
         completion_fn=fake_completion,
     )
     response = provider.generate(prompt="test", model_tier="small")
+    import json
 
-    assert response.text == ""
+    parsed = json.loads(response.text)
+    assert parsed["node_name"] == "test"
+    assert parsed["answer"] == "walk"
+
+
+def test_litellm_provider_returns_empty_when_reasoning_has_no_json() -> None:
+    """When reasoning_content contains only markdown thinking (no valid JSON),
+    the provider should return empty text (triggering retry/error)."""
+    from agent_os.models.providers.litellm_provider import EmptyModelResponseError
+
+    truncated_thinking = (
+        "1. **Analyze the Request:**\n"
+        "   * The user wants to wash their car.\n"
+        "   * 100 meters is very short.\n"
+        '   * Draft: ```json\n{"protocol_version": "node-io/v1", "question_for_user": [\n```\n'
+        "   * (truncated)"
+    )
+
+    def fake_completion(**kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="", reasoning_content=truncated_thinking),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=8),
+        )
+
+    provider = LiteLLMProvider(
+        small_model="model-small",
+        medium_model="model-medium",
+        large_model="model-large",
+        stream=False,
+        completion_fn=fake_completion,
+        empty_text_max_retries=0,
+    )
+
+    import pytest
+
+    with pytest.raises(EmptyModelResponseError):
+        provider.generate(prompt="test", model_tier="small")
+
+
+def test_litellm_provider_extracts_reasoning_content_in_stream() -> None:
+    """Streaming thinking models emit delta.reasoning_content instead of delta.content."""
+
+    def fake_completion(**kwargs):
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="", reasoning_content="hel"))],
+                usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="", reasoning_content="lo"))],
+                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2),
+            ),
+        ]
+        return iter(chunks)
+
+    provider = LiteLLMProvider(
+        small_model="model-small",
+        medium_model="model-medium",
+        large_model="model-large",
+        stream=True,
+        stream_to_console=False,
+        completion_fn=fake_completion,
+    )
+    response = provider.generate(prompt="test", model_tier="small")
+    assert response.text == "hello"
+
+
+def test_litellm_provider_retries_then_raises_when_both_content_and_reasoning_empty() -> None:
+    """When both content and reasoning_content are empty, retries should happen
+    and EmptyModelResponseError must be raised."""
+    from agent_os.models.providers.litellm_provider import EmptyModelResponseError
+
+    calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        calls.append(dict(kwargs))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=0),
+        )
+
+    provider = LiteLLMProvider(
+        small_model="model-small",
+        medium_model="model-medium",
+        large_model="model-large",
+        stream=False,
+        completion_fn=fake_completion,
+        empty_text_max_retries=2,
+    )
+
+    import pytest
+
+    with pytest.raises(EmptyModelResponseError, match="empty text after all retries"):
+        provider.generate(prompt="test", model_tier="small")
+
+    assert len(calls) == 3
+
+
+def test_litellm_provider_succeeds_on_retry_after_empty_text() -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_completion(**kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) <= 1:
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
+                usage=SimpleNamespace(prompt_tokens=4, completion_tokens=0),
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=5),
+        )
+
+    provider = LiteLLMProvider(
+        small_model="model-small",
+        medium_model="model-medium",
+        large_model="model-large",
+        stream=False,
+        completion_fn=fake_completion,
+        empty_text_max_retries=2,
+    )
+
+    response = provider.generate(prompt="test", model_tier="small")
+    assert response.text == '{"ok": true}'
+    assert len(calls) == 2
