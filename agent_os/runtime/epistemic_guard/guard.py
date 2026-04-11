@@ -31,9 +31,9 @@ class EpistemicGuard:
     """Generate structured uncertainty reports instead of guessing."""
 
     def build_break_report(self, state: RunState, uncertainty_type: UncertaintyType) -> BreakReport:
-        known = ", ".join(state.payload.accepted_facts[:3]) or "no accepted facts yet"
-        missing = ", ".join(state.investigation.pending_questions[:3]) or "evidence needed to continue"
-        question = state.uncertainty.question_for_user or "What missing fact should be prioritized next?"
+        known = ", ".join(state.payload.context_entries[:3]) or "no context collected yet"
+        missing = ", ".join(state.investigation.pending_questions[:3]) or "more information needed to continue"
+        question = state.uncertainty.question_for_user or "What missing information should be prioritized next?"
         return BreakReport(
             uncertainty_type=uncertainty_type,
             known_now=known,

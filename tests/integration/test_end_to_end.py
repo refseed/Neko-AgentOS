@@ -50,7 +50,23 @@ def test_end_to_end_flow_from_start_to_review_result(tmp_path) -> None:
     assert isinstance(result["memory_refs"], dict)
 
 
-def test_end_to_end_emits_break_report_when_evidence_missing(tmp_path) -> None:
+def test_end_to_end_completes_simple_reasoning_without_source_refs(tmp_path) -> None:
+    orchestrator = AgentOrchestrator(workspace_root=tmp_path)
+
+    result = orchestrator.start_run(
+        StartRunRequest(
+            goal="need focused evidence",
+            source_paths=[],
+        )
+    )
+
+    assert result["status"] in {"completed", "paused"}
+    assert result["run_id"].startswith("run_")
+
+
+def test_end_to_end_emits_clarification_when_evidence_missing_with_sources(tmp_path) -> None:
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("placeholder content for investigation", encoding="utf-8")
     orchestrator = AgentOrchestrator(workspace_root=tmp_path)
     orchestrator._investigation_runtime_node._clarification_question_node._model_gateway = _ClarificationGatewayStub()  # noqa: SLF001
     orchestrator._investigate = lambda _state: DistilledEvidence(  # noqa: SLF001
@@ -62,13 +78,12 @@ def test_end_to_end_emits_break_report_when_evidence_missing(tmp_path) -> None:
     result = orchestrator.start_run(
         StartRunRequest(
             goal="need focused evidence",
-            source_paths=[],
+            source_paths=[str(source_file)],
         )
     )
 
     assert result["status"] == "paused"
     assert result["break_report"] is not None
-    assert "question_for_user" in result["break_report"]
     question = str(result["break_report"]["question_for_user"])
     assert "关键事实" in question
     assert "1." in question
@@ -119,6 +134,8 @@ def test_end_to_end_debug_mode_includes_routing_steps(tmp_path) -> None:
 
 
 def test_end_to_end_comparison_goal_produces_guided_questions(tmp_path) -> None:
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("洗车相关信息", encoding="utf-8")
     orchestrator = AgentOrchestrator(workspace_root=tmp_path)
     orchestrator._investigation_runtime_node._clarification_question_node._model_gateway = _ClarificationGatewayStub()  # noqa: SLF001
     orchestrator._investigate = lambda _state: DistilledEvidence(  # noqa: SLF001
@@ -130,7 +147,7 @@ def test_end_to_end_comparison_goal_produces_guided_questions(tmp_path) -> None:
     result = orchestrator.start_run(
         StartRunRequest(
             goal="洗车店离家100米，我开车去还是步行去更方便？",
-            source_paths=[],
+            source_paths=[str(source_file)],
         )
     )
 

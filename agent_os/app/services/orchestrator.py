@@ -262,13 +262,13 @@ class AgentOrchestrator:
             return {"status": "error", "message": f"run_id not found: {request.run_id}"}
 
         has_user_answer = bool(request.user_answer and request.user_answer.strip())
-        accepted_facts = list(state.payload.accepted_facts)
+        context_entries = list(state.payload.context_entries)
         if has_user_answer and request.user_answer:
-            accepted_facts = list(dict.fromkeys([*accepted_facts, *self._extract_user_facts(request.user_answer)]))
+            context_entries = list(dict.fromkeys([*context_entries, *self._extract_user_inputs(request.user_answer)]))
 
         payload = state.payload.model_copy(
             update={
-                "accepted_facts": accepted_facts,
+                "context_entries": context_entries,
                 "stage_result": (
                     "retry"
                     if has_user_answer and state.payload.stage_result == "need_more_evidence"
@@ -293,7 +293,7 @@ class AgentOrchestrator:
                     state.investigation.enough_evidence
                     or (
                         has_user_answer
-                        and len([fact for fact in accepted_facts if fact.strip()]) >= self._config.investigation.min_fact_count
+                        and len([fact for fact in context_entries if fact.strip()]) >= self._config.investigation.min_fact_count
                     )
                 ),
             }
@@ -312,7 +312,7 @@ class AgentOrchestrator:
         self._trace_ids[resumed.run_id] = resumed.audit.trace_id
         return self._run_until_stop(resumed, debug=debug, debug_callback=debug_callback)
 
-    def _extract_user_facts(self, user_answer: str) -> list[str]:
+    def _extract_user_inputs(self, user_answer: str) -> list[str]:
         raw = user_answer.strip()
         if not raw:
             return []
@@ -323,8 +323,8 @@ class AgentOrchestrator:
         ]
         if not segments:
             segments = [raw]
-        facts = [f"user_input: {segment}" for segment in segments[:6]]
-        return list(dict.fromkeys(facts))
+        entries = [f"user_input: {segment}" for segment in segments[:6]]
+        return list(dict.fromkeys(entries))
 
     def _resolve_path(self, raw_path: str) -> Path:
         path = Path(raw_path)
@@ -398,7 +398,7 @@ class AgentOrchestrator:
             "blueprint_stage": state.blueprint.active_node,
             "draft_text": state.payload.draft_text,
             "verdict": state.payload.stage_result,
-            "accepted_facts": state.payload.accepted_facts,
+            "context_entries": state.payload.context_entries,
             "checkpoint_id": state.checkpoint.last_checkpoint_id,
             "break_report": break_report,
             "token_used": state.budget.token_used,
@@ -475,15 +475,15 @@ class AgentOrchestrator:
                 "pending_questions": list(after.investigation.pending_questions),
             }
         if node == "investigation":
-            added_facts = [
-                fact for fact in after.payload.accepted_facts if fact not in set(before.payload.accepted_facts)
+            added_entries = [
+                entry for entry in after.payload.context_entries if entry not in set(before.payload.context_entries)
             ]
             added_sources = [ref for ref in after.payload.source_refs if ref not in set(before.payload.source_refs)]
             return {
                 "enough_evidence": after.investigation.enough_evidence,
                 "pending_questions": list(after.investigation.pending_questions),
                 "question_for_user": after.uncertainty.question_for_user,
-                "added_facts": added_facts[:3],
+                "added_context_entries": added_entries[:3],
                 "added_sources": added_sources[:3],
             }
         if node == "reflection":

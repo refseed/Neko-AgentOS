@@ -17,7 +17,7 @@ class ClarificationQuestionInput(BaseModel):
     stage: str
     stage_status: str
     has_source_refs: bool
-    accepted_fact_count: int
+    context_entry_count: int
     pending_questions: list[str] = Field(default_factory=list)
     draft_preview: str = ""
     interaction_message: str = ""
@@ -58,7 +58,7 @@ class ClarificationQuestionNode:
         stage: str,
         stage_status: str,
         has_source_refs: bool,
-        accepted_fact_count: int,
+        context_entry_count: int,
         pending_questions: list[str],
         draft_preview: str,
         interaction_message: str | None = None,
@@ -71,7 +71,7 @@ class ClarificationQuestionNode:
             stage=stage,
             stage_status=stage_status,
             has_source_refs=has_source_refs,
-            accepted_fact_count=accepted_fact_count,
+            context_entry_count=context_entry_count,
             pending_questions=list(pending_questions),
             draft_preview=draft_preview,
             interaction_message=(interaction_message or "").strip(),
@@ -194,7 +194,7 @@ class ClarificationQuestionNode:
             f"stage={node_input.stage}\n"
             f"stage_status={node_input.stage_status}\n"
             f"has_source_refs={node_input.has_source_refs}\n"
-            f"accepted_fact_count={node_input.accepted_fact_count}\n"
+            f"context_entry_count={node_input.context_entry_count}\n"
             f"uncertainty_type={node_input.uncertainty_type}\n"
             f"blocked_by={blocked_text}\n"
             f"upstream_interaction_message={node_input.interaction_message}\n"

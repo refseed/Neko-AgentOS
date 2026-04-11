@@ -10,7 +10,7 @@ def test_prompt_builder_handles_optional_fields() -> None:
     state = RunState(run_id="run_1", task_id="task_1", goal="write summary")
     prompt = build_reasoning_prompt(state)
     assert "Goal: write summary" in prompt
-    assert "Accepted facts" in prompt
+    assert "Collected context" in prompt
 
 
 def test_reflection_prompt_isolated_from_reasoning_prompt() -> None:

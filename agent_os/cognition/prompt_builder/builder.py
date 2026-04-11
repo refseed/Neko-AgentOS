@@ -15,7 +15,7 @@ class PromptBuildInput(BaseModel):
     goal: str
     stage: str
     instruction: str
-    accepted_facts: list[str]
+    context_entries: list[str]
     memory_context: list[str]
     checklist: list[str]
     draft_text: str
@@ -36,25 +36,29 @@ class PromptBuilderNode(BaseLLMNode[PromptBuildInput, PromptBuildOutput]):
         return PromptBuildOutput
 
     def _reasoning_seed(self, node_input: PromptBuildInput) -> str:
-        accepted_facts = "\n".join(f"- {fact}" for fact in node_input.accepted_facts[:8]) or "- none yet"
+        context_entries = "\n".join(f"- {fact}" for fact in node_input.context_entries[:8]) or "- none"
         memory_context = "\n".join(f"- {item}" for item in node_input.memory_context[:8]) or "- none mounted"
         return (
             f"Goal: {node_input.goal}\n"
             f"Blueprint stage: {node_input.stage}\n"
             f"Instruction: {node_input.instruction}\n"
-            f"Accepted facts:\n{accepted_facts}\n"
+            f"Collected context:\n{context_entries}\n"
             f"Mounted memory:\n{memory_context}\n"
-            "Produce a concise draft. If facts are insufficient, list what is missing."
+            "Produce a concise draft that directly answers the question. "
+            "Use available context and general knowledge. "
+            "If the question genuinely cannot be answered without specific missing information, "
+            "clearly state what is needed instead of speculating. "
+            "Do not list speculative or nice-to-have gaps."
         )
 
     def _reflection_seed(self, node_input: PromptBuildInput) -> str:
         checklist_text = "\n".join(f"- {item}" for item in node_input.checklist) or "- Ensure claims are evidence-backed"
-        facts_text = "\n".join(f"- {fact}" for fact in node_input.accepted_facts[:8]) or "- none yet"
+        facts_text = "\n".join(f"- {fact}" for fact in node_input.context_entries[:8]) or "- none yet"
         memory_text = "\n".join(f"- {item}" for item in node_input.memory_context[:8]) or "- none mounted"
         return (
             f"Stage: {node_input.stage}\n"
             f"Checklist:\n{checklist_text}\n"
-            f"Accepted facts:\n{facts_text}\n"
+            f"Collected context:\n{facts_text}\n"
             f"Mounted memory:\n{memory_text}\n"
             f"Draft:\n{node_input.draft_text}\n"
             "Review dimensions: intent alignment, logic consistency, completeness, uncertainty handling, and evidence use when required.\n"
@@ -97,7 +101,7 @@ def build_reasoning_prompt(
             goal=state.goal,
             stage=state.blueprint.active_node,
             instruction=state.payload.instruction or state.goal,
-            accepted_facts=list(state.payload.accepted_facts),
+            context_entries=list(state.payload.context_entries),
             memory_context=list(state.payload.memory_context),
             checklist=[],
             draft_text="",
@@ -121,7 +125,7 @@ def build_reflection_prompt(
             goal=state.goal,
             stage=state.blueprint.active_node,
             instruction=state.payload.instruction or state.goal,
-            accepted_facts=list(state.payload.accepted_facts),
+            context_entries=list(state.payload.context_entries),
             memory_context=list(state.payload.memory_context),
             checklist=list(checklist),
             draft_text=draft_text,

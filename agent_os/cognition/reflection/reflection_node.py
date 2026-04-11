@@ -14,7 +14,7 @@ class ReflectionInput(BaseModel):
     stage: str
     stage_goal: str = ""
     checklist: list[str] = Field(default_factory=list)
-    accepted_facts: list[str] = Field(default_factory=list)
+    context_entries: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     required_output: str = "markdown"
     review_iteration: int = 0
@@ -92,7 +92,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 checklist_coverage=checklist_coverage,
                 interaction_requirements=["What missing evidence can break the current review loop?"],
             )
-        if draft.needs_investigation and not review_input.accepted_facts:
+        if draft.needs_investigation and not review_input.context_entries:
             return ReflectionVerdict(
                 protocol_version="node-io/v1",
                 confidence=0.85,
@@ -114,7 +114,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
                 checklist_coverage=checklist_coverage,
                 interaction_requirements=["Expand the draft with explicit conclusions and evidence links."],
             )
-        needs_source = bool(review_input.accepted_facts) and any(
+        needs_source = bool(review_input.context_entries) and any(
             any(keyword in item.lower() for keyword in ("evidence", "source", "citation", "reference"))
             for item in review_input.checklist
         )
@@ -166,7 +166,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
     def build_prompt(self, review_input: ReflectionInput) -> str:
         draft = self._latest_draft or ReasoningResult(draft_text="", needs_investigation=False)
         checklist_text = "\n".join(f"- {item}" for item in review_input.checklist) or "- no checklist"
-        facts_text = "\n".join(f"- {fact}" for fact in review_input.accepted_facts[:8]) or "- none"
+        facts_text = "\n".join(f"- {fact}" for fact in review_input.context_entries[:8]) or "- none"
         sources_text = "\n".join(f"- {ref}" for ref in review_input.source_refs[:8]) or "- none"
         return (
             "Role: general reflection node.\n"
@@ -192,7 +192,7 @@ class ReflectionNode(BaseLLMNode[ReflectionInput, ReflectionVerdict]):
             f"max_review_loops={review_input.max_review_loops}\n"
             f"min_draft_chars={review_input.min_draft_chars}\n"
             f"checklist:\n{checklist_text}\n"
-            f"accepted_facts:\n{facts_text}\n"
+            f"context_entries:\n{facts_text}\n"
             f"source_refs:\n{sources_text}\n"
             f"draft:\n{draft.draft_text}\n"
             f"draft_needs_investigation={draft.needs_investigation}\n"

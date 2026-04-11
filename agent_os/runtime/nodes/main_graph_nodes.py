@@ -84,6 +84,8 @@ class StrategistRuntimeNode:
         allowed_targets = self._legal_targets_getter(state.current_node)
         if self._template_target_filter is not None:
             allowed_targets = self._template_target_filter(state, allowed_targets)
+        if not state.payload.source_refs:
+            allowed_targets = allowed_targets - {"investigation"}
         if not allowed_targets:
             uncertainty = UncertaintyState(
                 status="blocked",
@@ -383,7 +385,7 @@ class InvestigationRuntimeNode:
         evidence = self._investigate(state)
 
         memory_with_cache = self._append_cache_ref(state, cache_ref)
-        accepted_facts = list(dict.fromkeys([*state.payload.accepted_facts, *evidence.facts]))
+        context_entries = list(dict.fromkeys([*state.payload.context_entries, *evidence.facts]))
         source_refs = list(dict.fromkeys([*state.payload.source_refs, *evidence.source_refs]))
 
         disk_refs = list(memory_with_cache.disk_refs)
@@ -422,7 +424,7 @@ class InvestigationRuntimeNode:
                 stage=state.blueprint.active_node,
                 stage_status=state.blueprint.stage_status,
                 has_source_refs=bool(source_refs),
-                accepted_fact_count=len(accepted_facts),
+                context_entry_count=len(context_entries),
                 pending_questions=pending_questions,
                 draft_preview=state.payload.draft_text,
                 interaction_message=state.uncertainty.question_for_user,
@@ -451,7 +453,7 @@ class InvestigationRuntimeNode:
             "memory": memory_with_cache.model_copy(update={"disk_refs": disk_refs}),
             "payload": state.payload.model_copy(
                 update={
-                    "accepted_facts": accepted_facts,
+                    "context_entries": context_entries,
                     "source_refs": source_refs,
                     "memory_context": [],
                 }
@@ -506,7 +508,7 @@ class ReflectionRuntimeNode:
             stage=state.blueprint.active_node,
             stage_goal=self._blueprint_graph.nodes[state.blueprint.active_node].goal,
             checklist=checklist,
-            accepted_facts=list(state.payload.accepted_facts),
+            context_entries=list(state.payload.context_entries),
             source_refs=list(state.payload.source_refs),
             required_output=state.payload.output_format,
             review_iteration=state.blueprint.stage_attempts,

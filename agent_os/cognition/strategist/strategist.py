@@ -39,7 +39,7 @@ class MetaRoutingInput(BaseModel):
     stage_result: str
     has_draft: bool
     investigation_active: bool
-    accepted_fact_count: int
+    context_entry_count: int
     uncertainty: str
     budget: str
     resource_allowed: bool
@@ -51,6 +51,7 @@ class MetaRoutingInput(BaseModel):
     task_complexity: str
     source_ref_count: int
     memory_context_items: int
+    stage_attempts: int = 0
     allowed_targets: list[str] = Field(default_factory=list)
 
 
@@ -109,6 +110,14 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
         )
         primary_tier = self._normalize_model_tier(resource.model_tier, fallback=heuristic.model_tier)
         candidate = self._candidate_from_model(node_input=node_input, model_tier=primary_tier, heuristic=heuristic)
+
+        if (
+            candidate.next_node == "reasoning"
+            and state.blueprint.stage_attempts >= 2
+            and state.payload.draft_text.strip()
+            and heuristic.next_node in ("reflection", "finish")
+        ):
+            candidate = heuristic
 
         if candidate.next_node not in normalized_targets:
             candidate = heuristic
@@ -242,6 +251,24 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             or state.payload.stage_result == "need_more_evidence"
             or state.investigation.active
         ):
+            if "investigation" not in allowed_targets:
+                return self._decision_with_allowed_targets(
+                    preferred_targets=("break",),
+                    allowed_targets=allowed_targets,
+                    confidence=0.95,
+                    model_tier=suggested_tier,
+                    guardrail_flags=["investigation_unavailable"],
+                    uncertainty_report=UncertaintyState(
+                        status="blocked",
+                        type="missing_evidence",
+                        question_for_user=(
+                            "当前任务需要额外的证据支撑，但没有可供检索的数据源。"
+                            "如果任务需要外部数据，请提供数据文件路径(source_paths)；"
+                            "如果不需要外部数据，请简化问题或直接提供所需信息。"
+                        ),
+                        blocked_by=["no_data_source"],
+                    ),
+                )
             return self._decision_with_allowed_targets(
                 preferred_targets=("investigation", "reasoning"),
                 allowed_targets=allowed_targets,
@@ -262,6 +289,14 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
                 preferred_targets=("reasoning",),
                 allowed_targets=allowed_targets,
                 confidence=0.84,
+                model_tier=suggested_tier,
+            )
+
+        if state.payload.draft_text.strip() and state.blueprint.stage_status == "in_progress":
+            return self._decision_with_allowed_targets(
+                preferred_targets=("reflection",),
+                allowed_targets=allowed_targets,
+                confidence=0.93,
                 model_tier=suggested_tier,
             )
 
@@ -297,7 +332,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             stage_result=state.payload.stage_result,
             has_draft=bool(state.payload.draft_text),
             investigation_active=state.investigation.active,
-            accepted_fact_count=len(state.payload.accepted_facts),
+            context_entry_count=len(state.payload.context_entries),
             uncertainty=f"{state.uncertainty.status}:{state.uncertainty.type}",
             budget=f"{state.budget.step_used}/{state.budget.max_steps}",
             resource_allowed=resource.allow_execution,
@@ -309,6 +344,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             task_complexity=task_complexity,
             source_ref_count=len(state.payload.source_refs),
             memory_context_items=len(state.payload.memory_context),
+            stage_attempts=state.blueprint.stage_attempts,
             allowed_targets=sorted(allowed_targets),
         )
 
@@ -326,6 +362,13 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             "- model_tier MUST be one of: small, medium, large.\n"
             "- uncertainty_report schema: {status, type, question_for_user, blocked_by}.\n"
             "- Keep payload_delta minimal.\n"
+            "Node behavior guide:\n"
+            "- reasoning: generate or revise a draft. Route here only when no draft exists or reflection returned 'retry'.\n"
+            "- reflection: evaluate the current draft quality. Route here after reasoning has produced a draft.\n"
+            "- investigation: search data sources for evidence. Only useful when source_ref_count > 0.\n"
+            "- blueprint: advance to the next blueprint stage after reflection approves.\n"
+            "- finish: complete the task and return output.\n"
+            "- break: pause and ask the user for clarification.\n"
             f"allowed_targets={allowed_targets_text}\n"
             f"goal={node_input.goal}\n"
             f"stage={node_input.stage}\n"
@@ -333,7 +376,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             f"stage_result={node_input.stage_result}\n"
             f"has_draft={node_input.has_draft}\n"
             f"investigation_active={node_input.investigation_active}\n"
-            f"accepted_fact_count={node_input.accepted_fact_count}\n"
+            f"context_entry_count={node_input.context_entry_count}\n"
             f"uncertainty={node_input.uncertainty}\n"
             f"budget={node_input.budget}\n"
             f"resource_allowed={node_input.resource_allowed}\n"
@@ -345,6 +388,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             f"task_complexity={node_input.task_complexity}\n"
             f"source_ref_count={node_input.source_ref_count}\n"
             f"memory_context_items={node_input.memory_context_items}\n"
+            f"stage_attempts={node_input.stage_attempts}\n"
         )
 
     def fallback(self, node_input: MetaRoutingInput) -> MetaRoutingOutput:
@@ -413,6 +457,24 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             or node_input.stage_result == "need_more_evidence"
             or node_input.investigation_active
         ):
+            if "investigation" not in allowed_targets:
+                return self._decision_with_allowed_targets(
+                    preferred_targets=("break",),
+                    allowed_targets=allowed_targets,
+                    confidence=0.95,
+                    model_tier=suggested_tier,
+                    guardrail_flags=["investigation_unavailable"],
+                    uncertainty_report=UncertaintyState(
+                        status="blocked",
+                        type="missing_evidence",
+                        question_for_user=(
+                            "当前任务需要额外的证据支撑，但没有可供检索的数据源。"
+                            "如果任务需要外部数据，请提供数据文件路径(source_paths)；"
+                            "如果不需要外部数据，请简化问题或直接提供所需信息。"
+                        ),
+                        blocked_by=["no_data_source"],
+                    ),
+                )
             return self._decision_with_allowed_targets(
                 preferred_targets=("investigation", "reasoning"),
                 allowed_targets=allowed_targets,
@@ -431,6 +493,13 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
                 preferred_targets=("reasoning",),
                 allowed_targets=allowed_targets,
                 confidence=0.84,
+                model_tier=suggested_tier,
+            )
+        if node_input.has_draft and node_input.stage_status == "in_progress":
+            return self._decision_with_allowed_targets(
+                preferred_targets=("reflection",),
+                allowed_targets=allowed_targets,
+                confidence=0.93,
                 model_tier=suggested_tier,
             )
         if node_input.stage_result == "approved":
@@ -511,7 +580,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
 
     def _estimate_context_chars(self, state: RunState) -> int:
         memory_chars = sum(len(item) for item in state.payload.memory_context[:6])
-        fact_chars = sum(len(item) for item in state.payload.accepted_facts[:8])
+        fact_chars = sum(len(item) for item in state.payload.context_entries[:8])
         return len(state.goal) + len(state.payload.instruction) + len(state.payload.draft_text) + memory_chars + fact_chars
 
     def _estimate_task_complexity(self, *, state: RunState, context_chars: int) -> str:
@@ -553,7 +622,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
         task_complexity: str,
         expected_output_tokens: int,
         investigation_active: bool,
-        accepted_fact_count: int,
+        context_entry_count: int,
     ) -> str:
         score = 0
         if context_chars >= 5500:
@@ -575,7 +644,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
 
         if investigation_active:
             score += 1
-        if accepted_fact_count >= 8:
+        if context_entry_count >= 8:
             score += 1
 
         if score >= 6:
@@ -593,7 +662,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             task_complexity=complexity,
             expected_output_tokens=expected_output_tokens,
             investigation_active=state.investigation.active,
-            accepted_fact_count=len(state.payload.accepted_facts),
+            context_entry_count=len(state.payload.context_entries),
         )
 
     def _estimate_model_tier_for_input(self, node_input: MetaRoutingInput) -> str:
@@ -602,7 +671,7 @@ class Strategist(BaseLLMNode[MetaRoutingInput, MetaRoutingOutput]):
             task_complexity=node_input.task_complexity,
             expected_output_tokens=node_input.expected_output_tokens,
             investigation_active=node_input.investigation_active,
-            accepted_fact_count=node_input.accepted_fact_count,
+            context_entry_count=node_input.context_entry_count,
         )
 
     def _should_enable_blueprint(self, state: RunState) -> bool:

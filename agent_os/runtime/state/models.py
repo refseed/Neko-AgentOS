@@ -13,7 +13,7 @@ class PayloadState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instruction: str = ""
-    accepted_facts: list[str] = Field(default_factory=list)
+    context_entries: list[str] = Field(default_factory=list)
     output_format: str = "markdown"
     draft_text: str = ""
     stage_result: str = ""

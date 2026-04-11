@@ -10,7 +10,7 @@ def test_reflection_node_approves_grounded_draft() -> None:
     node = ReflectionNode()
     review_input = ReflectionInput(
         stage="idea_summary",
-        accepted_facts=["fact"],
+        context_entries=["fact"],
         source_refs=["source.txt"],
     )
     verdict = node.review(
@@ -38,7 +38,7 @@ def test_reflection_node_can_use_model_verdict() -> None:
     node = ReflectionNode(model_gateway=FakeGateway())
     review_input = ReflectionInput(
         stage="idea_summary",
-        accepted_facts=["fact"],
+        context_entries=["fact"],
         source_refs=["source.txt"],
     )
     verdict = node.review(
@@ -60,7 +60,7 @@ def test_reflection_node_build_prompt_is_used_when_gateway_exists() -> None:
     review_input = ReflectionInput(
         stage="idea_summary",
         stage_goal="build summary",
-        accepted_facts=["fact"],
+        context_entries=["fact"],
         source_refs=["source.txt"],
     )
     node.review(
@@ -75,7 +75,7 @@ def test_reflection_node_detects_stage_goal_drift() -> None:
     review_input = ReflectionInput(
         stage="idea_summary",
         stage_goal="summarize experimental constraints",
-        accepted_facts=["fact"],
+        context_entries=["fact"],
         source_refs=["source.txt"],
     )
     verdict = node.review(
@@ -91,7 +91,7 @@ def test_reflection_node_is_not_forced_to_need_evidence_when_draft_is_clear() ->
         stage="idea_summary",
         stage_goal="给出洗车方式建议",
         checklist=["结论明确", "给出可执行建议"],
-        accepted_facts=[],
+        context_entries=[],
         source_refs=[],
     )
     verdict = node.review(

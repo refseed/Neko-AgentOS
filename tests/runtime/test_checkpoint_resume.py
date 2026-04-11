@@ -25,6 +25,7 @@ def test_resume_run_recovers_from_saved_checkpoint(tmp_path) -> None:
         goal="resume task",
         status="paused",
         current_node="break",
+        investigation=InvestigationState(enough_evidence=True),
         uncertainty=UncertaintyState(
             status="blocked",
             type="user_input_required",
@@ -71,7 +72,7 @@ def test_resume_run_with_user_answer_resets_need_more_evidence_loop(tmp_path) ->
     )
 
     assert result["run_id"] == "run_resume_loop"
-    assert any("省时间" in fact for fact in result["accepted_facts"])
+    assert any("省时间" in fact for fact in result["context_entries"])
     debug_steps = result.get("debug_steps", [])
     strategist_steps = [step for step in debug_steps if step.get("from_node") == "strategist"]
     assert strategist_steps

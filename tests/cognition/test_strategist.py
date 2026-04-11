@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from agent_os.cognition.resource_manager.resource_manager import ResourceDecision
 from agent_os.cognition.strategist.strategist import Strategist
-from agent_os.runtime.state.models import RunState
+from agent_os.runtime.state.models import BlueprintState, InvestigationState, PayloadState, RunState
 
 
 def test_strategist_routes_to_reasoning_when_no_draft() -> None:
@@ -160,3 +160,80 @@ def test_strategist_breaks_when_review_still_low_confidence() -> None:
     assert calls == ["small", "medium"]
     assert decision.next_node == "break"
     assert decision.uncertainty_report.status == "blocked"
+
+
+def test_strategist_breaks_when_investigation_needed_but_unavailable() -> None:
+    strategist = Strategist()
+    state = RunState(
+        run_id="run_1",
+        task_id="task_1",
+        goal="demo",
+        payload=PayloadState(stage_result="need_more_evidence"),
+        blueprint=BlueprintState(stage_status="need_more_evidence"),
+        investigation=InvestigationState(active=True),
+    )
+    decision = strategist.decide(
+        state=state,
+        resource=ResourceDecision(allow_execution=True, model_tier="small", reason="ok"),
+        allowed_targets={"reasoning", "reflection", "break", "finish"},
+    )
+    assert decision.next_node == "break"
+    assert "investigation_unavailable" in decision.guardrail_flags
+    assert decision.uncertainty_report.status == "blocked"
+
+
+def test_strategist_routes_to_reflection_when_draft_exists_and_in_progress() -> None:
+    strategist = Strategist()
+    state = RunState(
+        run_id="run_1",
+        task_id="task_1",
+        goal="demo",
+        payload=PayloadState(draft_text="This is a completed draft answer."),
+        blueprint=BlueprintState(stage_status="in_progress", stage_attempts=1),
+    )
+    decision = strategist.decide(
+        state=state,
+        resource=ResourceDecision(allow_execution=True, model_tier="small", reason="ok"),
+    )
+    assert decision.next_node == "reflection"
+    assert decision.confidence >= 0.9
+
+
+def test_strategist_repetition_guard_overrides_llm_reasoning_loop() -> None:
+    class FakeGateway:
+        def request(self, prompt: str, model_tier: str):
+            return SimpleNamespace(
+                text='{"next_node":"reasoning","confidence":0.88,"tool_profile":"reasoning_readonly","guardrail_flags":[]}'
+            )
+
+    strategist = Strategist(model_gateway=FakeGateway())
+    state = RunState(
+        run_id="run_1",
+        task_id="task_1",
+        goal="demo",
+        payload=PayloadState(draft_text="A valid draft."),
+        blueprint=BlueprintState(stage_status="in_progress", stage_attempts=3),
+    )
+    decision = strategist.decide(
+        state=state,
+        resource=ResourceDecision(allow_execution=True, model_tier="small", reason="ok"),
+    )
+    assert decision.next_node == "reflection"
+
+
+def test_strategist_routes_to_investigation_when_available() -> None:
+    strategist = Strategist()
+    state = RunState(
+        run_id="run_1",
+        task_id="task_1",
+        goal="demo",
+        payload=PayloadState(stage_result="need_more_evidence"),
+        blueprint=BlueprintState(stage_status="need_more_evidence"),
+        investigation=InvestigationState(active=True),
+    )
+    decision = strategist.decide(
+        state=state,
+        resource=ResourceDecision(allow_execution=True, model_tier="small", reason="ok"),
+        allowed_targets={"reasoning", "investigation", "reflection", "break", "finish"},
+    )
+    assert decision.next_node == "investigation"

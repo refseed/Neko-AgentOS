@@ -42,16 +42,18 @@ class ReasoningNode:
         prompt = self._prompt_builder(state)
         response = self._model_gateway.request(prompt=prompt, model_tier=state.routing.model_tier)
         draft_text = response.text
-        if not state.payload.accepted_facts:
-            return ReasoningResult(
-                draft_text=draft_text,
-                needs_investigation=True,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                estimated_cost_usd=response.estimated_cost_usd,
+        can_investigate = bool(state.payload.source_refs)
+        if not can_investigate:
+            needs_investigation = False
+        else:
+            has_evidence = any(
+                not entry.startswith("user_input:")
+                for entry in state.payload.context_entries
             )
+            needs_investigation = not has_evidence and not state.investigation.enough_evidence
         return ReasoningResult(
             draft_text=draft_text,
+            needs_investigation=needs_investigation,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             estimated_cost_usd=response.estimated_cost_usd,
